@@ -937,12 +937,16 @@ class Game {
         // целые крайние колонки — из-за него краны никогда не целились в первые/последние
         // колонки поля. Теперь доступны все колонки без исключения.
         // Также исключаем колонки, в которые СЕЙЧАС целится другой кран, ещё не сбросивший свой
-        // блок — иначе два крана могли выбрать одну и ту же колонку независимо друг от друга,
-        // и два блока падали точно в одну точку одновременно.
+        // блок, И колонки, куда УЖЕ летит кубик (сброшен, но ещё не приземлился) — иначе два
+        // блока могли одновременно оказаться нацелены на одну и ту же колонку (крест-накрест от
+        // разных кранов, либо новый кран поверх ещё не приземлившегося кубика), что визуально
+        // выглядело как "два ящика падают разом" или как будто ящик "пропадает", когда один
+        // перекрывает другой в одной и той же ячейке.
         const reserved = new Set(
             this.grabs.filter(g => g.hasBlock && !g.dropped)
                       .map(g => Math.round(g.dropAtX / this.cubeSize))
         );
+        for (const c of this.cubes) reserved.add(c.col);
         const candidates = [];
         for (let col = 0; col < this.COLS; col++) {
             if (this.columns[col].length < this.MAX_ROWS && !reserved.has(col)) {
@@ -950,8 +954,8 @@ class Game {
             }
         }
         if (candidates.length === 0) {
-            // Все свободные колонки заняты другими кранами или на потолке высоты —
-            // в этот раз кран просто проедет без сброса.
+            // Все свободные колонки заняты другими кранами/летящими кубиками или на потолке
+            // высоты — в этот раз кран просто проедет без сброса.
             return dir === 1 ? W + 1000 : -1000;
         }
         return candidates[Math.floor(Math.random() * candidates.length)];
@@ -1203,7 +1207,10 @@ class Game {
         // 2. Краны: едут один проезд, несут один блок, сбрасывают его один раз,
         //    уезжают за экран и возвращаются с новым блоком.
         this.speedMulTimer++;
-        if (this.speedMulTimer >= 360) {           // раз в 6 секунд — мягкий общий разгон
+        // Общий разгон полностью останавливается, как только на поле уже все 7 кранов —
+        // иначе даже мягкий постоянный прирост скорости в какой-то момент превращает финал
+        // забега в кашу на экране. С 7 кранами скорость фиксируется на достигнутом уровне.
+        if (this.speedMulTimer >= 360 && this.grabCount < 7) { // раз в 6 секунд — мягкий общий разгон
             this.speedMulTimer = 0;
             this.speedMul = Math.min(1.35, this.speedMul + 0.01);
         }
@@ -1353,7 +1360,45 @@ class Game {
         }
         if (this.shake > 0) this.shake *= 0.85;
 
+        // Финальная защита от застревания внутри коробки: какая бы комбинация действий за этот
+        // кадр ни привела к тому, что хитбокс игрока пересёкся с коробкой по-настоящему (не
+        // просто соприкасается краем, а физически залез внутрь), выталкиваем его наружу по
+        // кратчайшей стороне. Это подстраховка "последней инстанции" поверх обычных проверок
+        // столкновений — она не даёт персонажу зависнуть "за" коробкой ни при каких условиях.
+        this.unstickFromCubes();
+
         updateUI();
+    }
+
+    unstickFromCubes() {
+        const leftCol = Math.max(0, Math.floor(this.player.x / this.cubeSize));
+        const rightCol = Math.min(this.COLS - 1, Math.floor((this.player.x + this.player.w - 1) / this.cubeSize));
+        for (let col = leftCol; col <= rightCol; col++) {
+            for (const cube of this.columns[col]) {
+                const overlapX = this.player.x < cube.x + cube.w && this.player.x + this.player.w > cube.x;
+                const overlapY = this.player.y < cube.y + cube.h && this.player.y + this.player.h > cube.y;
+                if (!overlapX || !overlapY) continue;
+
+                const penLeft = this.player.x + this.player.w - cube.x;   // выход влево
+                const penRight = cube.x + cube.w - this.player.x;         // выход вправо
+                const penTop = this.player.y + this.player.h - cube.y;    // выход вверх (встать на коробку)
+                const penBottom = cube.y + cube.h - this.player.y;        // выход вниз
+                const minPen = Math.min(penLeft, penRight, penTop, penBottom);
+
+                if (minPen === penTop) {
+                    this.player.y = cube.y - this.player.h;
+                    if (this.player.vy > 0) this.player.vy = 0;
+                    this.player.onGround = true;
+                } else if (minPen === penBottom) {
+                    this.player.y = cube.y + cube.h;
+                    if (this.player.vy < 0) this.player.vy = 0;
+                } else if (minPen === penLeft) {
+                    this.player.x = cube.x - this.player.w;
+                } else {
+                    this.player.x = cube.x + cube.w;
+                }
+            }
+        }
     }
 
     // --- Проверка линий (Тетрис): ряд полон, если во ВСЕХ колонках есть коробка на этой высоте ---
@@ -1442,8 +1487,10 @@ class Game {
         }
 
         // статичные кубики (по их плавной визуальной позиции)
-        ctx.shadowColor = '#00000055';
-        ctx.shadowBlur = 4;
+        // shadowBlur здесь раньше стоял на всех коробках поля (их может быть до сотен при высоких
+        // стопках) — это заметно дорогая операция для Canvas2D, особенно на слабых телефонах, и
+        // была вероятной причиной просадок FPS и "рывков"/телепортации при большом числе кранов.
+        // Псевдо-объём коробки и так даётся тёмным внутренним квадратом — тень не нужна.
         for (let c = 0; c < this.COLS; c++) {
             for (let s of this.columns[c]) {
                 // Округляем до целого пикселя: пока коробка визуально "доезжает" до своего слота
@@ -1458,9 +1505,8 @@ class Game {
                 ctx.fillRect(sx + 4, sy + 4, s.w - 9, s.h - 9);
             }
         }
-        ctx.shadowBlur = 0;
 
-        // падающие кубики — тот же цвет, что и у стоящих (не индикатор опасности)
+        // падающие кубики — тень оставлена (их одновременно немного, максимум по одному на кран)
         ctx.shadowBlur = 8;
         ctx.shadowColor = '#00000055';
         for (let c of this.cubes) {
