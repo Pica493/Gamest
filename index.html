@@ -22,6 +22,31 @@
         min-height: 100vh;
         padding: 10px;
     }
+    /* На ПК пустые поля по бокам от игровой карточки оформлены как часть общей композиции —
+       раньше это была голая заливка фона, и на скриншотах/видео с широкого экрана выглядело
+       как телефонная игра, случайно оставленная посреди пустоты. Декор чисто на CSS (никаких
+       внешних картинок), полупрозрачный и статичный — самой игре не мешает, фокус всё равно
+       на карточке по центру. На телефонах класса .desktop нет, там всё остаётся как было. */
+    html.desktop body {
+        background:
+            radial-gradient(circle at 50% 45%, rgba(233,69,96,0.10), transparent 55%),
+            repeating-linear-gradient(135deg, rgba(255,255,255,0.025) 0 2px, transparent 2px 46px),
+            #1a1a2e;
+        overflow: hidden;
+    }
+    html.desktop body::before,
+    html.desktop body::after {
+        content: "🏗️";
+        position: fixed;
+        top: 50%;
+        font-size: min(22vw, 320px);
+        opacity: 0.05;
+        transform: translateY(-50%);
+        pointer-events: none;
+        filter: grayscale(1);
+    }
+    html.desktop body::before { left: min(6vw, 90px); }
+    html.desktop body::after { right: min(6vw, 90px); }
     .game-wrapper {
         position: relative;
         background: #16213e;
@@ -42,7 +67,7 @@
        там всё остаётся как было (компактная карточка). */
     html.desktop .game-wrapper {
         max-width: 900px;
-        width: min(94vw, calc((100vh - 40px) / 1.55));
+        width: min(94vw, calc((100vh - 24px) / 1.55));
     }
     .game-container {
         position: relative;
