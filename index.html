@@ -22,31 +22,6 @@
         min-height: 100vh;
         padding: 10px;
     }
-    /* На ПК пустые поля по бокам от игровой карточки оформлены как часть общей композиции —
-       раньше это была голая заливка фона, и на скриншотах/видео с широкого экрана выглядело
-       как телефонная игра, случайно оставленная посреди пустоты. Декор чисто на CSS (никаких
-       внешних картинок), полупрозрачный и статичный — самой игре не мешает, фокус всё равно
-       на карточке по центру. На телефонах класса .desktop нет, там всё остаётся как было. */
-    html.desktop body {
-        background:
-            radial-gradient(circle at 50% 45%, rgba(233,69,96,0.10), transparent 55%),
-            repeating-linear-gradient(135deg, rgba(255,255,255,0.025) 0 2px, transparent 2px 46px),
-            #1a1a2e;
-        overflow: hidden;
-    }
-    html.desktop body::before,
-    html.desktop body::after {
-        content: "🏗️";
-        position: fixed;
-        top: 50%;
-        font-size: min(22vw, 320px);
-        opacity: 0.05;
-        transform: translateY(-50%);
-        pointer-events: none;
-        filter: grayscale(1);
-    }
-    html.desktop body::before { left: min(6vw, 90px); }
-    html.desktop body::after { right: min(6vw, 90px); }
     .game-wrapper {
         position: relative;
         background: #16213e;
@@ -61,13 +36,20 @@
            Теперь ширина также ограничена высотой вьюпорта, чтобы весь блок всегда помещался. */
         width: min(100%, 420px, calc((100vh - 110px) / 1.55));
     }
-    /* На ПК растягиваем игру почти на весь экран, без узкой "телефонной" карточки.
-       Класс .desktop ставится инлайн-скриптом в самом начале <body>, до отрисовки,
+    /* На ПК используем почти всю доступную высоту окна — раньше отступ был избыточным (94vw и
+       запас по высоте 24px+делитель 1.55 давали заметно меньше, чем реально помещается), из-за
+       чего игра выглядела мельче, чем могла бы. Полностью убрать пустые поля по бокам нельзя —
+       это неизбежно для портретной игры (соотношение сторон ~2:3) на широком мониторе, — но
+       саму игровую карточку можно и нужно делать настолько крупной, насколько позволяет высота
+       экрана. Класс .desktop ставится инлайн-скриптом в самом начале <body>, до отрисовки,
        поэтому эффекта "мигания" маленького окна не будет. На телефонах класса нет —
        там всё остаётся как было (компактная карточка). */
     html.desktop .game-wrapper {
-        max-width: 900px;
-        width: min(94vw, calc((100vh - 24px) / 1.55));
+        max-width: 1200px;
+        /* Безопасное запасное значение на случай, если JS ещё не отработал (см. fitDesktopWrapperSize) —
+           тот скрипт замеряет реальную высоту блока и подгоняет размер намного точнее, чем можно
+           угадать в CSS одним числом. */
+        width: min(94vw, calc((100vh - 40px) / 1.6));
     }
     .game-container {
         position: relative;
@@ -759,6 +741,31 @@ function requestFullscreen() {
         document.documentElement.requestFullscreen().catch(() => {});
     }
 }
+
+// --- Точный подбор размера игровой карточки на ПК ---
+// CSS-формула выше — это только запасной вариант "на глаз". Здесь же реальное соотношение
+// высоты блока к его ширине (канвас + верхняя/нижняя панели + отступы) измеряется напрямую —
+// вместо того чтобы угадывать один общий коэффициент, который либо слишком осторожен (карточка
+// мельче, чем могла бы быть), либо слишком смелый (обрезается по высоте). После замера ширина
+// подбирается так, чтобы карточка была МАКСИМАЛЬНО крупной и при этом целиком помещалась и по
+// ширине, и по высоте окна.
+const wrapperEl = document.getElementById('wrapper');
+function fitDesktopWrapperSize() {
+    if (!isDesktop || !wrapperEl) return;
+    const probeWidth = 400; // произвольная проба — важно только соотношение, не сама величина
+    wrapperEl.style.width = probeWidth + 'px';
+    const naturalHeight = wrapperEl.getBoundingClientRect().height;
+    if (!naturalHeight) return;
+    const ratio = naturalHeight / probeWidth; // высота/ширина всего блока целиком
+
+    const availW = window.innerWidth * 0.97;
+    const availH = window.innerHeight * 0.97;
+    const targetW = Math.min(availW, availH / ratio, 1200);
+    wrapperEl.style.width = Math.max(240, Math.floor(targetW)) + 'px';
+}
+fitDesktopWrapperSize();
+window.addEventListener('resize', fitDesktopWrapperSize);
+document.addEventListener('fullscreenchange', () => requestAnimationFrame(fitDesktopWrapperSize));
 
 // ============================================================
 // 1. ИНИЦИАЛИЗАЦИЯ DOM
