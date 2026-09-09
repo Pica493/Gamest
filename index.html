@@ -14,6 +14,7 @@
         touch-action: none;
         font-family: 'Courier New', monospace;
         overscroll-behavior: none;
+        overflow: hidden; /* игра — одноэкранное приложение, прокрутки быть не должно никогда */
     }
     body {
         display: flex;
@@ -530,6 +531,9 @@ class AudioManager {
             this.sfxGain.connect(this.ctx.destination);
         }
         if (this.ctx.state === 'suspended') this.ctx.resume();
+        // Если музыкальный цикл был остановлен из-за ухода со вкладки (см. suspend()) —
+        // запускаем его заново "с чистого листа", а не даём доиграть то, что скопилось.
+        if (this.started && this.musicTimer === null) this.scheduleMusicLoop();
     }
 
     // --- вызывать по первому жесту пользователя ---
@@ -628,10 +632,14 @@ class AudioManager {
         localStorage.setItem('bd_musicVolume', v);
         if (this.musicGain && this.musicEnabled) this.musicGain.gain.value = v;
     }
-    // Полностью глушит вывод звука (сворачивание вкладки/приложения) — таймер музыкального
-    // цикла продолжает тикать в фоне (это нормально для setTimeout), но раз сам AudioContext
-    // приостановлен, звук физически не проигрывается, пока страница не станет активной снова.
+    // Полностью глушит вывод звука (сворачивание вкладки/приложения). Раньше таймер
+    // музыкального цикла продолжал "тикать" в фоне через setTimeout, планируя новые ноты —
+    // а поскольку currentTime у приостановленного AudioContext не идёт, все эти ноты
+    // фактически накапливались в одной и той же точке времени. При возврате на вкладку и
+    // возобновлении контекста они разом проигрывались все вместе — отсюда громкий "хлопок".
+    // Теперь при уходе со страницы сам цикл музыки тоже останавливается, а не просто глушится.
     suspend() {
+        if (this.musicTimer) { clearTimeout(this.musicTimer); this.musicTimer = null; }
         if (this.ctx && this.ctx.state === 'running') {
             try { this.ctx.suspend(); } catch (e) {}
         }
@@ -758,8 +766,11 @@ function fitDesktopWrapperSize() {
     if (!naturalHeight) return;
     const ratio = naturalHeight / probeWidth; // высота/ширина всего блока целиком
 
-    const availW = window.innerWidth * 0.97;
-    const availH = window.innerHeight * 0.97;
+    // Оставляем запас под padding body (10px сверху и снизу = 20px) плюс небольшой буфер —
+    // раньше это не учитывалось, из-за чего карточка иногда оказывалась на пару пикселей выше
+    // видимой области и страницу приходилось прокручивать, чтобы увидеть нижние кнопки.
+    const availW = window.innerWidth - 24;
+    const availH = window.innerHeight - 28;
     const targetW = Math.min(availW, availH / ratio, 1200);
     wrapperEl.style.width = Math.max(240, Math.floor(targetW)) + 'px';
 }
@@ -1317,6 +1328,13 @@ class Game {
                         updateUI();
                         continue;
                     } else {
+                        // Раньше кубик, ставший причиной смерти, не убирался из массива —
+                        // после game over игра замирает (update() больше не выполняется), и этот
+                        // кадр застывал навсегда с коробкой, визуально вклинившейся в спрайт
+                        // персонажа ("ящик проходит сквозь"). Теперь при смертельном ударе кубик
+                        // сразу убирается и на его месте остаётся эффект удара.
+                        this.cubes.splice(i, 1);
+                        this.spawnParticles(c.x + c.w/2, c.y + c.h/2, '#ff6b6b');
                         this.triggerGameOver();
                         return;
                     }
@@ -1489,6 +1507,17 @@ class Game {
     }
 
     // --- Отрисовка ---
+    // Единый вид коробки — используется абсолютно везде: на кране, в полёте и стоя на месте.
+    // Раньше у коробки в захвате крана были другие отступы отрисовки (+3/-6), чем у стоящих
+    // (+4/-9, плюс обрезка на 1px для зазора между соседними) — из-за этого один и тот же
+    // объект визуально выглядел по-разному в зависимости от того, где сейчас находится.
+    drawCube(x, y, size) {
+        ctx.fillStyle = '#e0a060';
+        ctx.fillRect(x, y, size - 1, size - 1);
+        ctx.fillStyle = '#c08040';
+        ctx.fillRect(x + 4, y + 4, size - 9, size - 9);
+    }
+
     draw() {
         ctx.save();
         if (this.shake > 0.3) {
@@ -1531,10 +1560,7 @@ class Game {
                 // соседними коробками на глаз "гуляет" по ширине от кадра к кадру. Целые пиксели
                 // убирают этот эффект, и зазор всегда остаётся одинаковым (ровно 1px).
                 const sx = Math.round(s.visualX ?? s.x), sy = Math.round(s.visualY ?? s.y);
-                ctx.fillStyle = '#e0a060';
-                ctx.fillRect(sx, sy, s.w - 1, s.h - 1);
-                ctx.fillStyle = '#c08040';
-                ctx.fillRect(sx + 4, sy + 4, s.w - 9, s.h - 9);
+                this.drawCube(sx, sy, s.w);
             }
         }
 
@@ -1542,10 +1568,7 @@ class Game {
         ctx.shadowBlur = 8;
         ctx.shadowColor = '#00000055';
         for (let c of this.cubes) {
-            ctx.fillStyle = '#e0a060';
-            ctx.fillRect(c.x, c.y, c.w, c.h);
-            ctx.fillStyle = '#c08040';
-            ctx.fillRect(c.x + 3, c.y + 3, c.w - 6, c.h - 6);
+            this.drawCube(Math.round(c.x), Math.round(c.y), c.w);
         }
         ctx.shadowBlur = 0;
 
@@ -1605,10 +1628,7 @@ class Game {
 
             // сам блок — только пока кран его держит
             if (g.hasBlock) {
-                ctx.fillStyle = '#e0a060';
-                ctx.fillRect(bx, by, bs, bs);
-                ctx.fillStyle = '#c08040';
-                ctx.fillRect(bx + 3, by + 3, bs - 6, bs - 6);
+                this.drawCube(Math.round(bx), Math.round(by), bs);
             }
         }
 
